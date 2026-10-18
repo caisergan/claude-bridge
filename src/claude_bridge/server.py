@@ -14,7 +14,7 @@ from aiohttp import web
 
 from . import __version__
 from .config import Config
-from .openai_compat import chat_completion, error_body, parse_chat_request
+from .openai_compat import chat_completion, error_body, parse_chat_request, parse_quota_limits
 from .quota import QuotaGuard
 from .runner import BridgeError, run_claude
 
@@ -76,10 +76,11 @@ async def chat_completions(request: web.Request) -> web.Response:
 
     try:
         req, ignored = parse_chat_request(body, state.cfg)
+        limits = state.quota.effective_limits(parse_quota_limits(body))
     except BridgeError as error:
         return _json_error(error)
 
-    decision = state.quota.check()
+    decision = state.quota.check(limits=limits)
     if decision.blocked:
         state.outcomes["quota_blocked"] += 1
         return _json_error(BridgeError(
@@ -118,7 +119,7 @@ async def chat_completions(request: web.Request) -> web.Response:
     if result.claude_code_version:
         state.claude_code_version = result.claude_code_version
     response = chat_completion(
-        req, result, ignored_params=ignored, queue_wait_ms=queue_wait_ms, quota=state.quota.snapshot(),
+        req, result, ignored_params=ignored, queue_wait_ms=queue_wait_ms, quota=state.quota.snapshot(limits=limits),
     )
     windows = response["x_claude"]["quota"]["windows"]
     log.info(

@@ -360,3 +360,35 @@ def test_api_key_mode_adds_bare_and_key(tmp_path):
     assert cfg.child_env()["ANTHROPIC_API_KEY"] == "sk-test"
     from claude_bridge.runner import ClaudeRequest, build_argv
     assert "--bare" in build_argv(cfg, "claude", ClaudeRequest("s", "p", "sonnet"))
+
+
+async def test_request_quota_limits_tighten_but_never_loosen(client_for, monkeypatch):
+    # The fake reports seven_day at 50%.
+    client = await client_for()
+    first = await client.post("/v1/chat/completions", json=chat_body(), headers=AUTH)
+    assert first.status == 200
+
+    # A panel threshold below the current level blocks the next call.
+    tight = await client.post("/v1/chat/completions", json=chat_body(x_quota_limits={"seven_day": 40}), headers=AUTH)
+    assert tight.status == 429
+    assert (await tight.json())["error"]["code"] == "quota_guard"
+
+    # A looser panel value cannot lift the bridge's own ceiling (90%).
+    monkeypatch.setenv("FAKE_SEVEN_DAY", "0.95")
+    await client.post("/v1/chat/completions", json=chat_body(), headers=AUTH)  # reveals 95%
+    loose = await client.post("/v1/chat/completions", json=chat_body(x_quota_limits={"seven_day": 100}), headers=AUTH)
+    assert loose.status == 429
+
+
+async def test_request_quota_limits_are_reported(client_for):
+    client = await client_for()
+    resp = await client.post("/v1/chat/completions", json=chat_body(x_quota_limits={"five_hour": 70, "seven_day": 85}), headers=AUTH)
+    assert resp.status == 200
+    assert (await resp.json())["x_claude"]["quota"]["limits_percent"] == {"five_hour": 70.0, "seven_day": 85.0}
+
+
+@pytest.mark.parametrize("limits", [{"seven_day": 0}, {"seven_day": 101}, {"seven_day": "80"}, [80], {"seven_day": True}])
+async def test_invalid_request_quota_limits_are_rejected(client_for, limits):
+    client = await client_for()
+    resp = await client.post("/v1/chat/completions", json=chat_body(x_quota_limits=limits), headers=AUTH)
+    assert resp.status == 400

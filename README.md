@@ -115,6 +115,11 @@ keeps the latest snapshot and refuses new calls (429 `quota_guard`) once a
 window in `[quota.limits]` reaches its percentage, or while Claude itself
 reports `rejected`. It reopens on its own when the window's reset time passes.
 
+A request may carry its own thresholds as `"x_quota_limits": {"five_hour": 80,
+"seven_day": 40}` (percent per window). The bridge applies the stricter of
+the request's value and its own `[quota.limits]`, so a client can keep its
+thresholds in its own settings but can never loosen the bridge's ceiling.
+
 The quota is **shared with your own interactive Claude Code use**, which the
 bridge only sees on its next call. Set limits so your own work keeps headroom.
 With `quota.state_file` set, a restart keeps an active block.

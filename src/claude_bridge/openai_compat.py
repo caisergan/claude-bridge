@@ -29,6 +29,28 @@ def invalid(message: str) -> BridgeError:
     return BridgeError(400, "invalid_request", message)
 
 
+def parse_quota_limits(body: Any) -> Optional[dict[str, float]]:
+    """Optional `x_quota_limits`: {window: percent} the caller wants enforced.
+
+    Lets the client keep its quota thresholds in its own settings (the
+    trade-station AI Engine panel) without editing the bridge's config file.
+    The bridge still applies the stricter of this and its own ceiling.
+    """
+    raw = body.get("x_quota_limits") if isinstance(body, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise invalid("x_quota_limits must be an object of window -> percent")
+    limits: dict[str, float] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise invalid("x_quota_limits must map window names to numbers")
+        if not 0 < float(value) <= 100:
+            raise invalid(f"x_quota_limits.{name} must be a percentage in (0, 100]")
+        limits[name] = float(value)
+    return limits
+
+
 def parse_chat_request(body: Any, cfg: Config) -> tuple[ClaudeRequest, list[str]]:
     if not isinstance(body, dict):
         raise invalid("request body must be a JSON object")

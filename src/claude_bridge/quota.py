@@ -62,7 +62,18 @@ class QuotaGuard:
         windows = (self.info or {}).get("unifiedWindows")
         return windows if isinstance(windows, dict) else {}
 
-    def check(self, *, now: Optional[float] = None) -> QuotaDecision:
+    def effective_limits(self, requested: Optional[dict[str, float]] = None) -> dict[str, float]:
+        """Per-request limits, never looser than the bridge's own configuration.
+
+        A client (the analysis engine's panel setting) may tighten a window or
+        add one; it can never raise a window above the configured ceiling.
+        """
+        limits = dict(self.limits)
+        for name, value in (requested or {}).items():
+            limits[name] = min(limits.get(name, 100.0), float(value))
+        return limits
+
+    def check(self, *, now: Optional[float] = None, limits: Optional[dict[str, float]] = None) -> QuotaDecision:
         now = now if now is not None else time.time()
         info = self.info or {}
 
@@ -73,7 +84,7 @@ class QuotaGuard:
                 window = info.get("rateLimitType") or "unknown"
                 return QuotaDecision(True, f"claude rejected ({window} window)", _seconds_until(resets_at, now))
 
-        for name, limit in self.limits.items():
+        for name, limit in (self.limits if limits is None else limits).items():
             window = self.windows().get(name)
             if not isinstance(window, dict):
                 continue
@@ -89,10 +100,11 @@ class QuotaGuard:
                 )
         return QuotaDecision(False)
 
-    def snapshot(self, *, now: Optional[float] = None) -> dict[str, Any]:
-        decision = self.check(now=now)
+    def snapshot(self, *, now: Optional[float] = None, limits: Optional[dict[str, float]] = None) -> dict[str, Any]:
+        effective = self.limits if limits is None else limits
+        decision = self.check(now=now, limits=effective)
         return {
-            "limits_percent": self.limits,
+            "limits_percent": effective,
             "windows": {
                 name: {
                     "utilization_percent": utilization_percent(w.get("utilization")),
