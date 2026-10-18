@@ -19,21 +19,23 @@ timeout_seconds = 120
 max_concurrency = 3                          # parallel claude processes
 max_queue = 20                               # waiting requests before 503
 # Fixed, empty working directory for every call (must stay empty).
-workdir = "~/.local/state/claude-bridge/cwd"
+workdir = "~/.local/share/claude-bridge/cwd"
 # Built-in plugins Claude Code may report; any other plugin fails the call
 # with 424 context_guard (see README "Isolation").
 allowed_plugins = ["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]
 
 # Authentication — pick at most one; with none, the current `claude` login is used.
-# Separate long-lived token (from `claude setup-token`) + its own config dir:
-# config_dir = "~/.config/claude-bridge/claude-home"
-# oauth_token_file = "~/.config/claude-bridge/oauth-token"
+# Recommended: a separate long-lived token (from `claude setup-token`) and the
+# bridge's own config dir, so bridge runs never write to your ~/.claude or
+# ~/.claude.json (each run rewrites the config dir's state file + a backup).
+config_dir = "~/.local/share/claude-bridge/claude-home"
+oauth_token_file = "~/.config/claude-bridge/oauth-token"
 # Pay-per-token API key instead of the subscription (adds --bare):
 # api_key_file = "~/.config/claude-bridge/anthropic-api-key"
 
 [quota]
 # Persist the last rate-limit snapshot so a restart keeps an active block.
-state_file = "~/.local/state/claude-bridge/quota.json"   # default: none
+state_file = "~/.local/share/claude-bridge/state/quota.json"   # default: none
 
 [quota.limits]
 # Stop accepting calls once a window's utilization (percent) reaches its limit;

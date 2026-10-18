@@ -153,7 +153,7 @@ memory, hooks, plugins' content or Claude Code tools. Three layers keep it so:
    The loaded set is returned in `x_claude.context` and `/health.last_context`.
 
 The working directory is a fixed, empty, `0700` directory
-(`claude.workdir`, default `~/.local/state/claude-bridge/cwd`). Fixed, so the
+(`claude.workdir`, default `~/.local/share/claude-bridge/cwd`). Fixed, so the
 environment block is byte-identical between calls (a random temp dir would
 change the request every time and defeat caching of retries); checked before
 every call, so nothing (e.g. an `AGENTS.md`) can be planted there — a
@@ -168,7 +168,7 @@ refuses to start without one.
 | Config | What runs |
 |---|---|
 | nothing set | the host's current `claude` login (`~/.claude`) |
-| `oauth_token_file` (+ optional `config_dir`) | a long-lived token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`, optionally with its own `CLAUDE_CONFIG_DIR` so it never touches your interactive login |
+| `oauth_token_file` + `config_dir` (recommended) | a long-lived token from `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`, optionally with its own `CLAUDE_CONFIG_DIR` so it never touches your interactive login |
 | `api_key_file` | `ANTHROPIC_API_KEY` + `--bare` (pay-per-token API; `--bare` ignores OAuth, so it is only used here) |
 
 Check the Claude Code / Anthropic terms for your plan before pointing a
@@ -178,14 +178,35 @@ subscription login at automated workloads.
 
 Requires Python ≥ 3.11 and a working `claude` CLI on the host.
 
+Runtime files live apart from the source checkout and from your own Claude
+Code setup, so developing the bridge or using Claude Code interactively never
+collides with running analyses:
+
+| What | Where |
+|---|---|
+| source (development) | `~/projects/claude-bridge` |
+| installed service (pinned commit) | `~/.local/share/claude-bridge/venv` |
+| Claude Code config dir of the bridge (`CLAUDE_CONFIG_DIR`) | `~/.local/share/claude-bridge/claude-home` |
+| empty working directory | `~/.local/share/claude-bridge/cwd` |
+| quota state | `~/.local/share/claude-bridge/state/` |
+| config + secrets (0700) | `~/.config/claude-bridge/` |
+
 ```bash
-cd ~/projects/claude-bridge
-uv venv -p 3.11 .venv && uv pip install -p .venv -e .
+# Install a pinned commit (source edits do not reach the service until you reinstall).
+R=~/.local/share/claude-bridge
+mkdir -p $R/claude-home $R/cwd $R/state && chmod 700 $R $R/claude-home $R/cwd
+uv venv -p 3.11 $R/venv
+uv pip install -p $R/venv "claude-bridge @ git+file://$HOME/projects/claude-bridge@$(git -C ~/projects/claude-bridge rev-parse HEAD)"
 
 mkdir -p ~/.config/claude-bridge && chmod 700 ~/.config/claude-bridge
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/claude-bridge/token
 chmod 600 ~/.config/claude-bridge/token
-cp deploy/config.example.toml ~/.config/claude-bridge/config.toml   # then edit
+cp ~/projects/claude-bridge/deploy/config.example.toml ~/.config/claude-bridge/config.toml   # then edit
+
+# Separate long-lived Claude token (interactive, opens a browser login once):
+claude setup-token
+read -rs T && printf '%s' "$T" > ~/.config/claude-bridge/oauth-token && unset T
+chmod 600 ~/.config/claude-bridge/oauth-token
 
 cp deploy/claude-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload

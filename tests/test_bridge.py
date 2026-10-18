@@ -344,6 +344,10 @@ def test_load_config(tmp_path, monkeypatch):
     assert cfg.default_model == "haiku" and cfg.default_effort == "low" and cfg.max_concurrency == 2
     assert cfg.quota_limits == {"five_hour": 80.0, "seven_day": 70.0}
 
+    path.write_text('[claude]\nconfig_dir = "~/.claude"\n')
+    with pytest.raises(ConfigError, match="own Claude Code setup"):
+        load_config(path)
+
     path.write_text('[claude]\ndefault_model = "gpt-5"\n')
     with pytest.raises(ConfigError):
         load_config(path)

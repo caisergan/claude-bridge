@@ -99,7 +99,7 @@ class Config:
     # Claude Code's environment block byte-identical between calls (a random
     # temp dir would change it every time); the runner refuses to start while
     # it contains anything, so no AGENTS.md/CLAUDE.md can be planted there.
-    workdir: Path = field(default_factory=lambda: Path(os.path.expanduser("~/.local/state/claude-bridge/cwd")))
+    workdir: Path = field(default_factory=lambda: Path(os.path.expanduser("~/.local/share/claude-bridge/cwd")))
     extra_args: tuple[str, ...] = ()
 
     # [quota] — window name -> max utilization in percent (0-100).
@@ -229,6 +229,13 @@ def load_config(path: Optional[Path]) -> Config:
         raise ConfigError(f"claude.default_model {cfg.default_model!r} is not in claude.models")
     if cfg.max_concurrency < 1 or cfg.max_queue < 0 or cfg.timeout_seconds <= 0:
         raise ConfigError("max_concurrency >= 1, max_queue >= 0 and timeout_seconds > 0 are required")
+    if cfg.config_dir is not None:
+        personal = {Path(os.path.expanduser("~/.claude")).resolve(), Path(os.path.expanduser("~")).resolve()}
+        if cfg.config_dir.resolve() in personal:
+            raise ConfigError(
+                f"claude.config_dir {cfg.config_dir} is your own Claude Code setup; "
+                "give the bridge its own directory (e.g. ~/.local/share/claude-bridge/claude-home)"
+            )
     if cfg.oauth_token_file is not None and cfg.api_key_file is not None:
         raise ConfigError("set claude.oauth_token_file OR claude.api_key_file, not both")
     return cfg

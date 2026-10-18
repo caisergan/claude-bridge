@@ -9,10 +9,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/claude-bridge
+WorkingDirectory=%h/.local/share/claude-bridge
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/projects/claude-bridge/.venv/bin/claude-bridge --config %h/.config/claude-bridge/config.toml
+ExecStart=%h/.local/share/claude-bridge/venv/bin/claude-bridge --config %h/.config/claude-bridge/config.toml
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
