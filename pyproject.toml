@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-bridge"
+version = "0.1.0"
+description = "OpenAI-compatible HTTP bridge to headless Claude Code (claude -p) with schema-enforced output and a quota guard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-aiohttp>=1.0"]
+
+[project.scripts]
+claude-bridge = "claude_bridge.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

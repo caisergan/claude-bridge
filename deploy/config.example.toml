@@ -1,0 +1,37 @@
+# claude-bridge configuration. Copy to ~/.config/claude-bridge/config.toml.
+# Every key is optional; the values below are the defaults unless noted.
+
+[server]
+# Loopback for local tools; 10.0.0.1 is docker0, which containers reach as
+# host.docker.internal. Never bind 0.0.0.0.
+hosts = ["127.0.0.1", "10.0.0.1"]          # default: ["127.0.0.1"]
+port = 8320
+# Bearer token clients must send. Required. chmod 600, keep outside any repo.
+token_file = "~/.config/claude-bridge/token"
+
+[claude]
+binary = "claude"                            # resolved on PATH
+default_model = "sonnet"                     # used when a request omits "model"
+models = ["sonnet", "opus", "haiku", "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]
+# Effort when a request sends no reasoning_effort. Empty = Claude Code's default.
+default_effort = ""
+timeout_seconds = 120
+max_concurrency = 3                          # parallel claude processes
+max_queue = 20                               # waiting requests before 503
+
+# Authentication — pick at most one; with none, the current `claude` login is used.
+# Separate long-lived token (from `claude setup-token`) + its own config dir:
+# config_dir = "~/.config/claude-bridge/claude-home"
+# oauth_token_file = "~/.config/claude-bridge/oauth-token"
+# Pay-per-token API key instead of the subscription (adds --bare):
+# api_key_file = "~/.config/claude-bridge/anthropic-api-key"
+
+[quota]
+# Persist the last rate-limit snapshot so a restart keeps an active block.
+state_file = "~/.local/state/claude-bridge/quota.json"   # default: none
+
+[quota.limits]
+# Stop accepting calls once a window's utilization (percent) reaches its limit;
+# reopen at the window's reset. Shared with your own Claude Code use.
+five_hour = 80
+seven_day = 90

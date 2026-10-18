@@ -1,0 +1,21 @@
+# User unit: ~/.config/systemd/user/claude-bridge.service
+#   systemctl --user daemon-reload && systemctl --user enable --now claude-bridge
+# Survives logout only with lingering enabled (loginctl enable-linger $USER).
+[Unit]
+Description=claude-bridge - OpenAI-compatible bridge to headless Claude Code
+After=network-online.target
+# docker0 (10.0.0.1) may appear after us at boot; keep retrying the bind.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/claude-bridge
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/projects/claude-bridge/.venv/bin/claude-bridge --config %h/.config/claude-bridge/config.toml
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
