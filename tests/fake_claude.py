@@ -55,8 +55,29 @@ usage = {
     "output_tokens_details": {"thinking_tokens": 12},
 }
 
-emit({"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "claude_code_version": "9.9.9",
-      "tools": ["StructuredOutput"], "session_id": "sess-1"})
+schema = arg("--json-schema")
+# Shape of a real 2.1.302 init with the bridge's flags + hardening env.
+init = {
+    "type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "claude_code_version": "9.9.9",
+    "tools": ["StructuredOutput"] if schema else [], "mcp_servers": [], "skills": [], "slash_commands": [],
+    "plugins": [{"name": "cc-plugin-agents-md", "path": "builtin", "source": "cc-plugin-agents-md@builtin"},
+                {"name": "cc-plugin-plugin-authoring", "path": "builtin", "source": "cc-plugin-plugin-authoring@builtin"}],
+    "agents": ["claude", "general-purpose", "statusline-setup"], "memory_paths": None, "session_id": "sess-1",
+}
+if scenario == "leak_mcp":
+    init["mcp_servers"] = [{"name": "dbx", "status": "connected"}]
+elif scenario == "leak_tools":
+    init["tools"] = init["tools"] + ["Bash"]
+elif scenario == "leak_memory":
+    init["memory_paths"] = {"auto": "/home/x/.claude/projects/-tmp-x/memory/"}
+elif scenario == "leak_plugin":
+    init["plugins"] = init["plugins"] + [{"name": "some-user-plugin", "path": "/x", "source": "x"}]
+elif scenario == "no_init":
+    init = None
+if init is not None:
+    emit(init)
+if scenario.startswith("leak_"):
+    time.sleep(60)  # a real run would now call the API; the bridge must kill us first
 
 if scenario == "crash":
     sys.stderr.write("boom: something broke\n")
@@ -68,7 +89,6 @@ if scenario == "hang":
     time.sleep(60)
     sys.exit(0)
 
-schema = arg("--json-schema")
 structured = {"sentiment": "positive", "score": 0.85} if schema else None
 text = json.dumps(structured) if schema else f"echo: {prompt}"
 result = {

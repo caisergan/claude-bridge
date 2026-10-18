@@ -37,6 +37,7 @@ class BridgeState:
         self.outcomes: Counter[str] = Counter()
         self.claude_code_version = _claude_version(binary)
         self.last_error: Optional[dict[str, Any]] = None
+        self.last_context: Optional[dict[str, Any]] = None
 
 
 def _claude_version(binary: str) -> Optional[str]:
@@ -113,6 +114,7 @@ async def chat_completions(request: web.Request) -> web.Response:
         state.semaphore.release()
 
     state.outcomes["ok"] += 1
+    state.last_context = result.context
     if result.claude_code_version:
         state.claude_code_version = result.claude_code_version
     response = chat_completion(
@@ -158,6 +160,7 @@ async def health(request: web.Request) -> web.Response:
         "uptime_s": int(time.time() - state.started_at),
         "outcomes": dict(state.outcomes),
         "last_error": state.last_error,
+        "last_context": state.last_context,
         "quota": quota,
     })
 

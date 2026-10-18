@@ -5,10 +5,19 @@ Each call is a fresh, throwaway Claude Code process:
 * no tools (`--tools ""`), no user/project settings or hooks
   (`--setting-sources ""`), no MCP servers (`--strict-mcp-config`), no slash
   commands, and no session written to disk (`--no-session-persistence`);
-* an empty temporary working directory, so there is no project to read;
+* a fixed, empty working directory (checked before every call), so there is
+  no project to read and the request Claude Code builds is the same each time;
 * the prompt on stdin, the instructions as the whole system prompt;
 * a schema, when given, passed to `--json-schema`, so Claude Code validates the
   answer and returns it as `structured_output`.
+
+Every run is also *checked*: Claude Code's `init` event (emitted before the
+first API request) lists what it loaded. Anything beyond the expected minimum
+— a tool other than StructuredOutput, an MCP server, a skill, a slash command,
+a memory path, an unknown plugin — kills the process before it spends quota
+and fails the call with 424 `context_guard`. A Claude Code update that starts
+loading something new therefore stops the bridge instead of silently changing
+what every analysis sees.
 
 The process runs in its own session/process group; a timeout or a cancelled
 request kills the whole group.
@@ -22,7 +31,6 @@ import logging
 import os
 import re
 import signal
-import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -96,6 +104,7 @@ class ClaudeResult:
     num_turns: Optional[int]
     rate_limit: Optional[dict[str, Any]]
     wall_ms: int
+    context: dict[str, Any] = field(default_factory=dict)
     raw_result: dict[str, Any] = field(repr=False, default_factory=dict)
 
 
@@ -106,6 +115,57 @@ class _Stream:
     result: Optional[dict[str, Any]] = None
     last_stop_reason: Optional[str] = None
     bad_lines: int = 0
+    context_problems: list[str] = field(default_factory=list)
+
+
+def context_summary(init: dict[str, Any]) -> dict[str, Any]:
+    """What Claude Code reported loading, as recorded in x_claude and /health."""
+    return {
+        "tools": init.get("tools"),
+        "mcp_servers": init.get("mcp_servers"),
+        "skills": init.get("skills"),
+        "plugins": [p.get("name") if isinstance(p, dict) else p for p in init.get("plugins") or []],
+        "memory_paths": init.get("memory_paths"),
+    }
+
+
+def check_context(init: dict[str, Any], req: ClaudeRequest, cfg: Config) -> list[str]:
+    """Problems with what Claude Code says it loaded; empty list = as expected."""
+    problems: list[str] = []
+    expected_tools = ["StructuredOutput"] if req.schema is not None else []
+    tools = init.get("tools")
+    if not isinstance(tools, list):
+        problems.append("init event has no tools list")
+    elif sorted(map(str, tools)) != expected_tools:
+        problems.append(f"tools {tools} (expected {expected_tools})")
+    mcp = init.get("mcp_servers")
+    if not isinstance(mcp, list):
+        problems.append("init event has no mcp_servers list")
+    elif mcp:
+        problems.append(f"mcp_servers {mcp}")
+    for key in ("skills", "slash_commands"):
+        if init.get(key):
+            problems.append(f"{key} {init[key]}")
+    if init.get("memory_paths"):
+        problems.append(f"memory_paths {init['memory_paths']}")
+    plugins = init.get("plugins") or []
+    names = [p.get("name") if isinstance(p, dict) else str(p) for p in plugins]
+    unknown = [n for n in names if n not in cfg.allowed_plugins]
+    if unknown:
+        problems.append(f"plugins {unknown} not in claude.allowed_plugins")
+    return problems
+
+
+def prepare_workdir(cfg: Config) -> str:
+    path = cfg.workdir
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    entries = sorted(p.name for p in path.iterdir())
+    if entries:
+        raise BridgeError(
+            424, "context_guard",
+            f"workdir {path} must stay empty (found: {', '.join(entries[:5])})",
+        )
+    return str(path)
 
 
 def build_argv(cfg: Config, binary: str, req: ClaudeRequest) -> list[str]:
@@ -147,39 +207,40 @@ async def run_claude(
     stream = _Stream()
     stderr_chunks: list[bytes] = []
 
-    with tempfile.TemporaryDirectory(prefix="claude-bridge-") as workdir:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=workdir,
-            env=env,
-            start_new_session=True,
-            limit=_STREAM_LIMIT,
+    workdir = prepare_workdir(cfg)
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=workdir,
+        env=env,
+        start_new_session=True,
+        limit=_STREAM_LIMIT,
+    )
+    try:
+        await asyncio.wait_for(
+            _drive(proc, req.prompt, stream, stderr_chunks, on_rate_limit,
+                   check=lambda init: check_context(init, req, cfg)),
+            timeout=cfg.timeout_seconds,
         )
-        try:
-            await asyncio.wait_for(
-                _drive(proc, req.prompt, stream, stderr_chunks, on_rate_limit),
-                timeout=cfg.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            await _kill_group(proc)
-            raise BridgeError(
-                504, "timeout", f"claude did not finish within {cfg.timeout_seconds:g}s",
-                details={"wall_ms": _ms_since(started)},
-            ) from None
-        except BaseException:
-            # Cancelled request (client gone) or a bug: never leave a child behind.
-            await _kill_group(proc)
-            raise
+    except asyncio.TimeoutError:
+        await _kill_group(proc)
+        raise BridgeError(
+            504, "timeout", f"claude did not finish within {cfg.timeout_seconds:g}s",
+            details={"wall_ms": _ms_since(started)},
+        ) from None
+    except BaseException:
+        # Cancelled request (client gone) or a bug: never leave a child behind.
+        await _kill_group(proc)
+        raise
 
     wall_ms = _ms_since(started)
     stderr = b"".join(stderr_chunks).decode("utf-8", "replace")[-_STDERR_TAIL:]
     return _interpret(req, stream, proc.returncode, stderr, wall_ms)
 
 
-async def _drive(proc, prompt: str, stream: _Stream, stderr_chunks: list[bytes], on_rate_limit) -> None:
+async def _drive(proc, prompt: str, stream: _Stream, stderr_chunks: list[bytes], on_rate_limit, check) -> None:
     async def feed() -> None:
         assert proc.stdin is not None
         try:
@@ -192,11 +253,18 @@ async def _drive(proc, prompt: str, stream: _Stream, stderr_chunks: list[bytes],
 
     async def read_stdout() -> None:
         assert proc.stdout is not None
+        checked = False
         while True:
             line = await proc.stdout.readline()
             if not line:
                 return
             _consume(line, stream, on_rate_limit)
+            if stream.init and not checked:
+                checked = True
+                stream.context_problems = check(stream.init)
+                if stream.context_problems:
+                    await _kill_group(proc)  # init precedes the first API request
+                    return
 
     async def read_stderr() -> None:
         assert proc.stderr is not None
@@ -224,7 +292,8 @@ def _consume(line: bytes, stream: _Stream, on_rate_limit) -> None:
         return
     kind = event.get("type")
     if kind == "system" and event.get("subtype") == "init":
-        stream.init = event
+        if not stream.init:
+            stream.init = event
     elif kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if isinstance(info, dict):
@@ -249,6 +318,14 @@ def _interpret(req: ClaudeRequest, stream: _Stream, returncode: Optional[int], s
         "wall_ms": wall_ms,
         "claude_code_version": stream.init.get("claude_code_version"),
     }
+    if stream.context_problems:
+        raise BridgeError(
+            424, "context_guard",
+            "claude loaded more than the bridge allows: " + "; ".join(stream.context_problems),
+            details=details | {"context_problems": stream.context_problems},
+        )
+    if result is not None and not stream.init:
+        raise BridgeError(424, "context_guard", "claude produced a result without an init event to check", details=details)
     if result is None:
         if _looks_like_auth(stderr):
             raise BridgeError(424, "claude_auth", f"claude is not authenticated: {stderr.strip()[-500:]}", details=details)
@@ -294,6 +371,7 @@ def _interpret(req: ClaudeRequest, stream: _Stream, returncode: Optional[int], s
         num_turns=result.get("num_turns"),
         rate_limit=stream.rate_limit,
         wall_ms=wall_ms,
+        context=context_summary(stream.init),
         raw_result=result,
     )
 

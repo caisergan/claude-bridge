@@ -174,6 +174,7 @@ def chat_completion(
             "num_turns": result.num_turns,
             "cache_creation_input_tokens": cache_write,
             "claude_code_version": result.claude_code_version,
+            "context": result.context,
             "ignored_params": ignored_params,
             "quota": quota,
         },

@@ -18,6 +18,11 @@ default_effort = ""
 timeout_seconds = 120
 max_concurrency = 3                          # parallel claude processes
 max_queue = 20                               # waiting requests before 503
+# Fixed, empty working directory for every call (must stay empty).
+workdir = "~/.local/state/claude-bridge/cwd"
+# Built-in plugins Claude Code may report; any other plugin fails the call
+# with 424 context_guard (see README "Isolation").
+allowed_plugins = ["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]
 
 # Authentication — pick at most one; with none, the current `claude` login is used.
 # Separate long-lived token (from `claude setup-token`) + its own config dir:

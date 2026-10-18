@@ -45,6 +45,31 @@ BASE_ENV_ALLOWLIST = (
 )
 
 
+# Set on every child. Each switch removes something Claude Code would otherwise
+# load or do around an analysis call; measured on 2.1.302 via the init event:
+# auto-memory path, telemetry plugin, Explore/Plan agents disappear.
+HARDENING_ENV = {
+    "DISABLE_AUTOUPDATER": "1",                       # never self-update mid-request
+    "DISABLE_UPDATES": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",           # no per-cwd memory dir
+    "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",            # no CLAUDE.md lookup
+    "CLAUDE_CODE_DISABLE_ORG_MEMORY": "1",
+    "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1",
+    "CLAUDE_CODE_DISABLE_POLICY_SKILLS": "1",
+    "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": "1",
+    "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+    "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",  # telemetry / error reporting off
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+}
+
+# Built-in plugins Claude Code 2.1.302 still reports with every switch above.
+# They add nothing to the request (verified by capturing it); anything else in
+# the init event fails the call — see runner.check_context.
+DEFAULT_ALLOWED_PLUGINS = ("cc-plugin-agents-md", "cc-plugin-plugin-authoring")
+
+
 class ConfigError(ValueError):
     """The configuration cannot be used to start the bridge."""
 
@@ -69,6 +94,12 @@ class Config:
     oauth_token_file: Optional[Path] = None
     api_key_file: Optional[Path] = None
     passthrough_env: tuple[str, ...] = ()
+    allowed_plugins: tuple[str, ...] = DEFAULT_ALLOWED_PLUGINS
+    # Fixed, empty working directory shared by every call. A fixed path keeps
+    # Claude Code's environment block byte-identical between calls (a random
+    # temp dir would change it every time); the runner refuses to start while
+    # it contains anything, so no AGENTS.md/CLAUDE.md can be planted there.
+    workdir: Path = field(default_factory=lambda: Path(os.path.expanduser("~/.local/state/claude-bridge/cwd")))
     extra_args: tuple[str, ...] = ()
 
     # [quota] — window name -> max utilization in percent (0-100).
@@ -95,8 +126,7 @@ class Config:
             for key in (*BASE_ENV_ALLOWLIST, *self.passthrough_env)
             if key in os.environ
         }
-        # Never self-update mid-request; a version change is an operator step.
-        env["DISABLE_AUTOUPDATER"] = "1"
+        env.update(HARDENING_ENV)
         if self.config_dir is not None:
             env["CLAUDE_CONFIG_DIR"] = str(self.config_dir)
         if self.oauth_token_file is not None:
@@ -187,7 +217,11 @@ def load_config(path: Optional[Path]) -> Config:
         oauth_token_file=_path(claude.get("oauth_token_file")),
         api_key_file=_path(claude.get("api_key_file")),
         passthrough_env=_str_tuple(claude.get("passthrough_env", []), "claude.passthrough_env"),
+        allowed_plugins=_str_tuple(
+            claude.get("allowed_plugins", list(defaults.allowed_plugins)), "claude.allowed_plugins"
+        ),
         extra_args=_str_tuple(claude.get("extra_args", []), "claude.extra_args"),
+        workdir=_path(claude.get("workdir")) or defaults.workdir,
         quota_limits=limits,
         state_file=_path(quota.get("state_file")),
     )

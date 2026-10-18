@@ -72,7 +72,10 @@ cache reads and writes) and an `x_claude` object:
   "cost_usd_equivalent": 0.0123,
   "session_id": "…", "duration_ms": 900, "duration_api_ms": 700, "wall_ms": 2100,
   "queue_wait_ms": 0, "num_turns": 2, "cache_creation_input_tokens": 1200,
-  "claude_code_version": "2.1.302", "ignored_params": ["temperature", "max_tokens"],
+  "claude_code_version": "2.1.302",
+  "context": {"tools": ["StructuredOutput"], "mcp_servers": [], "skills": [],
+              "plugins": ["cc-plugin-agents-md", "cc-plugin-plugin-authoring"], "memory_paths": null},
+  "ignored_params": ["temperature", "max_tokens"],
   "quota": {"windows": {"five_hour": {"utilization_percent": 35.0, "resets_at": 1792358400}, …},
             "limits_percent": {"five_hour": 80, "seven_day": 90}, "blocked": false, …}
 }
@@ -92,6 +95,7 @@ where available.
 | 400 | `invalid_request`, `upstream_rejected` | The request cannot be served as sent. | no |
 | 401 | `unauthorized` | Missing/wrong bearer token. | no |
 | 424 | `claude_auth` | Claude Code is not logged in or its credential was refused. An operator must act. | no |
+| 424 | `context_guard` | Claude Code loaded more than the minimum context, or the workdir is not empty (see Isolation). An operator must act. | no |
 | 429 | `rate_limited` | Claude refused on quota; `Retry-After` = seconds to the window reset. | after reset |
 | 429 | `quota_guard` | The bridge's own limit (below) is reached. `Retry-After` as above. | after reset |
 | 502 | `schema_failed` | No schema-valid `structured_output`. | yes |
@@ -115,18 +119,49 @@ The quota is **shared with your own interactive Claude Code use**, which the
 bridge only sees on its next call. Set limits so your own work keeps headroom.
 With `quota.state_file` set, a restart keeps an active block.
 
-## Isolation
+## Isolation — the same minimal context on every call
 
-- Child environment is an allowlist (`PATH`, `HOME`, `USER`, locale, `XDG_*`,
-  `TMPDIR`, plus `claude.passthrough_env`). Parent Claude Code session variables
-  (`CLAUDECODE`, `CLAUDE_CODE_*`) and a stray `ANTHROPIC_API_KEY` never reach
-  the child. `DISABLE_AUTOUPDATER=1` is always set.
-- No tools, no user/project/local settings (so no hooks or plugins), no MCP
-  servers, no slash commands, no session files, an empty temporary cwd that is
-  deleted afterwards.
-- Binds only the configured addresses (default loopback). Every `/v1/*` call
-  needs the bearer token from `server.token_file`; the bridge refuses to start
-  without one.
+Measured on Claude Code 2.1.302 by capturing the API request it sends: with
+the bridge's flags and environment the request contains only
+
+- Claude Code's billing-header line and one "You are a Claude agent…" line,
+- **your system prompt** (cached for 1 h),
+- an account e-mail reminder (injected by Claude Code for claude.ai logins),
+- **your user message**,
+- an environment block (working directory, OS, model name, date),
+- the `StructuredOutput` tool (only when a schema is given).
+
+That is ~1k tokens of Claude Code framing; no skills, MCP servers, CLAUDE.md,
+memory, hooks, plugins' content or Claude Code tools. Three layers keep it so:
+
+1. **Flags:** `--tools ""`, `--setting-sources ""` (no user/project/local
+   settings, hence no hooks or user plugins), `--strict-mcp-config`,
+   `--disable-slash-commands`, `--no-session-persistence`.
+2. **Environment:** an allowlist (`PATH`, `HOME`, `USER`, locale, `XDG_*`,
+   `TMPDIR`, plus `claude.passthrough_env`) — parent Claude Code session
+   variables (`CLAUDECODE`, `CLAUDE_CODE_*`) and a stray `ANTHROPIC_API_KEY`
+   never reach the child — plus `HARDENING_ENV` (`config.py`): no auto-memory,
+   no CLAUDE.md lookup, no bundled/policy skills, no Explore/Plan agents, no
+   telemetry or other non-essential traffic, no self-update.
+3. **Context guard, every call:** Claude Code's `init` event, emitted before
+   the first API request, lists what it loaded. Anything beyond the expected
+   minimum — a tool other than `StructuredOutput`, an MCP server, a skill, a
+   slash command, a memory path, a plugin not in `claude.allowed_plugins` —
+   kills the process before any quota is spent and fails the call with
+   **424 `context_guard`**. A Claude Code update that starts loading something
+   new stops the bridge instead of silently changing what every call sees.
+   The loaded set is returned in `x_claude.context` and `/health.last_context`.
+
+The working directory is a fixed, empty, `0700` directory
+(`claude.workdir`, default `~/.local/state/claude-bridge/cwd`). Fixed, so the
+environment block is byte-identical between calls (a random temp dir would
+change the request every time and defeat caching of retries); checked before
+every call, so nothing (e.g. an `AGENTS.md`) can be planted there — a
+non-empty workdir also fails with 424 `context_guard`.
+
+The bridge binds only the configured addresses (default loopback). Every
+`/v1/*` call needs the bearer token from `server.token_file`; the bridge
+refuses to start without one.
 
 ## Authentication modes
 
@@ -169,7 +204,10 @@ Smoke test (two small real calls, Haiku by default):
 scripts/smoke.sh http://127.0.0.1:8320 haiku
 ```
 
-Re-run it after every Claude Code update — flags and stream-json shapes can change.
+Re-run it after every Claude Code update — flags and stream-json shapes can
+change. If an update makes calls fail with `context_guard`, read the reported
+problem, check the new item is harmless (capture a request if unsure), and only
+then add it to `claude.allowed_plugins` or the hardening env.
 
 ## Development
 
@@ -180,7 +218,8 @@ uv pip install -p .venv -e '.[dev]'
 
 Tests run against `tests/fake_claude.py`, which replays the stream-json event
 shapes of a real Claude Code 2.1.302 call (success, plain text, 429, 529,
-schema failure, crash, auth failure, hang). No real Claude call is made.
+schema failure, crash, auth failure, hang, and init events that leak tools,
+MCP servers, memory or plugins). No real Claude call is made.
 
 ## Configuration reference
 
